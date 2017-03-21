@@ -10,6 +10,7 @@ import os
 from miscellaneous import ensure_path_replacment,startLog
 from NGSseq_utils import analyze_sam_file,open_sam_or_bam,default_check_multimap,compare_sam_headers
 import random
+import numpy as np
 
 
 #Hi-C-pro based mapping pepline
@@ -289,14 +290,15 @@ class CRepeats_Localizer():
 		self.R1sam = R1sam
 		self.R2sam = R2sam
 		self.replaceFiles = replaceFiles
-		startLog(logFileName=logFileName)
+		startLog(filename=logFileName)
+		logging.info("Starting repeat localizer")
 		random.seed()
 	
 	def check_header(self,header,genome):
 		#check that reference names in header are same as chromosome labels in genome
 		return sum([i in header['SQ'] for i in genome.label2idx.keys()])==len(header2['SQ'])==len(genome.label2idx)
 	
-	def findBestAlignments(fout):
+	def findBestAlignments(self,fout):
 		#fout - name of the output file
 		
 		maxdist = 100000000000
@@ -317,57 +319,78 @@ class CRepeats_Localizer():
 			raise Exception("Sam files do not math")
 		#end chek
 		
-		logging.debug("Reading "+R1sam)
+		logging.debug("Reading "+self.R1sam)
 		##############Process R1 sam file and keep aligning info#############
-		reads1 = {}
+		self.reads1 = {} #dict of tuples:
+		#read_name: (r1_ref,r1_start)
+		
+		self.read_pairs={} #dict of tuples:
+		#read_name: (r1_ref,r1_start,r2_ref,r2_start,dist)
+
 		self.R1_unmapped = 0
 		for r1 in R1.fetch(until_eof=True):
 			if not r1.is_unmapped:
 				try:
-					reads1[r1.query_name].append((r1.reference_id,reference_start))
+					self.reads1[r1.query_name].append((r1.reference_id,r1.reference_start))
 				except:
-					reads1[r1.query_name]=[(r1.reference_id,reference_start)]
+					self.reads1[r1.query_name]=[(r1.reference_id,r1.reference_start)]
+					self.read_pairs[r1.query_name]=(-1,-1,-1,-1,maxdist)
 			else:
 				self.R1_unmapped += 1
 
-		logging.debug("Reading "+R2sam)
+		logging.debug("Reading "+self.R2sam)
 		##############Process R2 sam file and find best alignments################
-		read_pairs={} #dict of tuples:
-		#(r1_ref,r1_start,r2_ref,r2_start,dist)
 		self.SE = 0
 		self.R2_unmapped = 0
 		for r2 in R2.fetch(until_eof=True):
-			if not r2.query_name in maxdist.keys():
-				self.SE += 1
+			if r2.is_unmapped:
+				self.R2_unmapped += 1
 				continue
 			
-			if not r2.is_unmapped:
-				try:
-					current_dist = read_pairs[r2.query_name][4]
-				except:
-					current_dist = maxdist
-				if r2.reference_id != reads1[r1.reference_id][0]:
-					if current_dist == maxdist:
-						read_pairs[r2.query_name] = reads1[r1.reference_id]+(r2.reference_id,r2.reference_start,-1)
-					elif current_dist == -1 and random.randint(0,1) == 0:
-						read_pairs[r2.query_name] = reads1[r1.reference_id]+(r2.reference_id,r2.reference_start,-1)
-				else:
-					dist = abs(reads1[r1.reference_id][0]-r2.reference_start)
-					if dist < current_dist or current_dist == -1:
-						read_pairs[r2.query_name] = reads1[r1.reference_id]+(r2.reference_id,r2.reference_start,-1)
-			else:
-				self.R2_unmapped += 1
+			try:	 
+				current_dist = self.read_pairs[r2.query_name][4]
+			except:
+				self.SE += 1
+				continue
+
+			for r1 in self.reads1[r2.query_name]: #go through all r1 locations
+				if r2.reference_id != r1[0]: #trans read
+					if current_dist == maxdist: #if we don't have any pare yet
+						self.read_pairs[r2.query_name] = r1+(r2.reference_id,r2.reference_start,-1) #set current
+					elif current_dist == -1 and random.randint(0,1) == 0: #if we have trans pair, with 50% chance
+						self.read_pairs[r2.query_name] = r1+(r2.reference_id,r2.reference_start,-1) #set current
+
+					current_dist = -1 #set current distance to trans
+
+				else: #cis read
+					dist = abs(r1[1]-r2.reference_start) #calculate distance in nt
+					if dist < current_dist or current_dist == -1: #if it's closer than we had
+						self.read_pairs[r2.query_name] = r1+(r2.reference_id,r2.reference_start,-1) #set current
+						current_dist = dist #update current distance
 
 		##############Write results to the output################
-		logging.info("In R1: "+self.R1_unmapped+" unmapped")
-		logging.info("In R2: "+self.R2_unmapped+" unmapped")
-		logging.info("In R1: "+self.SE+" single end")
-		logging.info("In R2: "+len(reads1)-len(read_pairs)+" single end")
 		
 		logging.debug("Writing results to "+fout)
 		
-		with open(fout,w) as out:
-			for i in read_pairs.keys():
-				fout.write(i+"\t"+"\t".join(map(str,read_pairs[i]))+"\n")
+		with open(fout,"w") as out:
+			for i in self.read_pairs.keys():
+				if self.read_pairs[i][-1] != maxdist:
+					out.write(i+"\t"+"\t".join(map(str,self.read_pairs[i]))+"\n")
 		
 		logging.debug("Done")
+		
+	def print_stats(self):
+		try:
+			self.SE
+		except:
+			logging.error("Please run findBestAlignments first. \
+			This call to print_stats will have no effect")
+		else:
+			logging.info("In R1: "+str(self.R1_unmapped)+" unmapped")
+			logging.info("In R2: "+str(self.R2_unmapped)+" unmapped")
+			logging.info("In R1: "+str(self.SE)+" single end")
+			logging.info("In R2: "+str(len(self.reads1)-len(self.read_pairs))+" single end")
+			logging.info("Destibution of alignments number per read in R1")
+			c=np.bincount([len(i) for i in self.reads1])
+			logging.info("\n".join([str(ind)+":"+str(val) \
+						for ind,val in enumerate(c) if val != 0]))

@@ -1,0 +1,41 @@
+import numpy as np
+from miscellaneous import startPmDebug,startLog
+from NGSseq_utils import *
+startPmDebug()
+
+uniqueSam_R1 = 
+uniqueSam_R2 = 
+guesResults = 
+
+R1 = open_sam_or_bam(mainSam_R1)
+R2 = open_sam_or_bam(mainSam_R2)
+
+read_pairs = {}
+startLog()
+
+for line in guesResults:
+	line = line.split()
+	reads_pairs[line[0]] = line[1:]
+
+dist = []
+	
+for r1 in R1.fetch(until_eof=True):
+	if not r1.is_unmapped:
+		if reads_pairs[r1.query_name][0] != r1.reference_id:
+			dist.append(-1)
+		else:
+			dist.append(abs(r1.reference_start-reads_pairs[r1.query_name][1]))
+	else:
+		raise
+
+for r2 in R2.fetch(until_eof=True):
+	dist = []
+	if not r2.is_unmapped:
+		if reads_pairs[r2.query_name][2] != r2.reference_id:
+			dist.append(-1)
+		else:
+			dist.append(abs(r2.reference_start-reads_pairs[r2.query_name][3]))
+	else:
+		raise
+		
+np.savetxt(dist,"dist.txt")
